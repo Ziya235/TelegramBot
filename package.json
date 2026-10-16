@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "nodemon backend/server.js",
     "start": "node backend/server.js",
-    "test": "node --test backend/tests/matchLifecycle.test.js",
+    "test": "node --test \"backend/tests/**/*.test.js\"",
     "build": "prisma generate",
     "postinstall": "prisma generate"
   },
@@ -13,6 +13,9 @@
   "author": "",
   "type": "module",
   "license": "ISC",
+  "engines": {
+    "node": ">=22"
+  },
   "description": "",
   "dependencies": {
     "@arcjet/node": "^1.5.0",
@@ -28,6 +31,7 @@
     "jsonwebtoken": "^9.0.3",
     "morgan": "^1.11.0",
     "multer": "^2.2.0",
+    "openai": "^7.34.0",
     "prisma": "^7.8.0",
     "socket.io": "^4.8.3",
     "tailwindcss": "^4.3.2"
