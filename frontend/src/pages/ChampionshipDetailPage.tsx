@@ -1,0 +1,259 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
+import {
+  fetchVisibleChampionship,
+  fetchVisibleChampionshipMatches,
+  fetchVisibleChampionshipStandings,
+  fetchVisibleChampionshipStatistics,
+} from "../api/championships";
+import { ChampionshipGroups } from "../components/championship/ChampionshipGroups";
+import { ChampionshipHeader } from "../components/championship/ChampionshipHeader";
+import { ChampionshipMatches } from "../components/championship/ChampionshipMatches";
+import { ChampionshipOverview } from "../components/championship/ChampionshipOverview";
+import { ChampionshipPlayoff } from "../components/championship/ChampionshipPlayoff";
+import {
+  ChampionshipTabs,
+  type ChampionshipTabId,
+} from "../components/championship/ChampionshipTabs";
+import { ChampError, ChampionshipDetailSkeleton } from "../components/championship/ChampShared";
+import { TopScorers } from "../components/championship/TopScorers";
+import { Button } from "../components/ui";
+import { useAuth } from "../context/AuthContext";
+import { buildGroupRoundViews, resolveChampionshipRound } from "../lib/championshipRounds";
+import type {
+  ChampionshipListItem,
+  ChampionshipStatistics,
+  GroupStandingsBlock,
+} from "../types/championship";
+import type { Match } from "../types/match";
+
+const TAB_IDS: ChampionshipTabId[] = ["overview", "groups", "matches", "playoff", "scorers"];
+
+export default function ChampionshipDetailPage() {
+  const { championshipId: idParam } = useParams();
+  const championshipId = Number(idParam);
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [championship, setChampionship] = useState<ChampionshipListItem | null>(
+    null,
+  );
+  const [standings, setStandings] = useState<GroupStandingsBlock[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [statistics, setStatistics] = useState<ChampionshipStatistics>({
+    players: [],
+    teams: [],
+  });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const tabParam = searchParams.get("tab");
+  const activeTab: ChampionshipTabId = TAB_IDS.includes(
+    tabParam as ChampionshipTabId,
+  )
+    ? (tabParam as ChampionshipTabId)
+    : "overview";
+
+  const load = useCallback(async (silent = false) => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    if (!Number.isInteger(championshipId) || championshipId <= 0) {
+      setError("Yanlış çempionat");
+      setLoading(false);
+      return;
+    }
+    if (!silent) {
+      setLoading(true);
+      setError(null);
+    }
+    try {
+      const [champ, standingRows, matchRows, stats] = await Promise.all([
+        fetchVisibleChampionship(championshipId),
+        fetchVisibleChampionshipStandings(championshipId),
+        fetchVisibleChampionshipMatches(championshipId),
+        fetchVisibleChampionshipStatistics(championshipId),
+      ]);
+      setChampionship(champ);
+      setStandings(standingRows);
+      setMatches(matchRows);
+      setStatistics(stats);
+      if (!silent) setError(null);
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Çempionat məlumatlarını yükləmək mümkün olmadı.",
+      );
+      if (!silent) {
+        setChampionship(null);
+      }
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [championshipId, user]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const hasLive = matches.some((m) => m.status === "LIVE");
+  useEffect(() => {
+    if (!hasLive) return;
+    const timer = window.setInterval(() => {
+      void load(true);
+    }, 12_000);
+    return () => window.clearInterval(timer);
+  }, [hasLive, load]);
+
+  const hasGroups =
+    championship?.format === "GROUP_AND_PLAYOFF" ||
+    (championship?.groups.length ?? 0) > 0;
+  const hasPlayoff =
+    championship?.format === "PLAYOFF_ONLY" ||
+    championship?.format === "GROUP_AND_PLAYOFF";
+
+  const tabs = useMemo(() => {
+    const all: { id: ChampionshipTabId; label: string }[] = [
+      { id: "overview", label: "İcmal" },
+    ];
+    if (hasGroups) all.push({ id: "groups", label: "Qruplar" });
+    all.push({ id: "matches", label: "Bütün oyunlar" });
+    if (hasPlayoff) all.push({ id: "playoff", label: "Pley-off" });
+    all.push({ id: "scorers", label: "Statistika" });
+    return all;
+  }, [hasGroups, hasPlayoff]);
+
+  useEffect(() => {
+    if (!championship) return;
+    if (!tabs.some((t) => t.id === activeTab)) {
+      setSearchParams({ tab: "overview" }, { replace: true });
+    }
+  }, [activeTab, championship, setSearchParams, tabs]);
+
+  const myTeamIds = useMemo(
+    () => new Set((championship?.myTeams ?? []).map((t) => t.id)),
+    [championship?.myTeams],
+  );
+
+  const roundState = useMemo(
+    () =>
+      championship
+        ? resolveChampionshipRound(matches, championship.status, championship.currentStage)
+        : null,
+    [championship, matches],
+  );
+  const groupViews = useMemo(
+    () => buildGroupRoundViews(matches, championship?.groups ?? []),
+    [matches, championship?.groups],
+  );
+
+  const openMatch = (match: Match) => {
+    navigate(
+      `/sports/football/championships/${championshipId}/matches/${match.id}`,
+    );
+  };
+
+  const bg =
+    "[background:linear-gradient(135deg,#E8FFF3_0%,#EAF8FF_48%,#F2EDFF_100%)]";
+
+  if (!user) {
+    return (
+      <div className={`min-h-screen pt-24 text-center ${bg}`}>
+        <p className="mb-4 text-gray-500">Çempionata baxmaq üçün daxil olun</p>
+        <Button onClick={() => navigate("/login")}>Giriş</Button>
+      </div>
+    );
+  }
+
+  if (loading) {
+    return (
+      <div className={`min-h-screen pt-24 pb-20 ${bg}`}>
+        <div className="mx-auto max-w-[1100px] px-4 sm:px-6">
+          <ChampionshipDetailSkeleton />
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !championship) {
+    return (
+      <div className={`min-h-screen pt-24 ${bg}`}>
+        <div className="mx-auto max-w-[1100px] px-4 sm:px-6">
+          <ChampError
+            message={
+              error?.includes("do not have access") || error?.includes("giriş")
+                ? "Bu özəl çempionata yalnız iştirakçılar baxa bilər"
+                : error || "Çempionat məlumatlarını yükləmək mümkün olmadı."
+            }
+            onRetry={() => void load()}
+          />
+          <div className="mt-4 text-center">
+            <Button
+              variant="outline"
+              className="border-gray-200 text-gray-700"
+              onClick={() => navigate("/sports/football?tab=championships")}
+            >
+              Çempionatlara qayıt
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className={`min-h-screen pt-24 pb-20 ${bg}`}>
+      <div className="mx-auto max-w-[1100px] px-4 sm:px-6">
+        <ChampionshipHeader championship={championship} />
+        <div className="mt-6">
+          <ChampionshipTabs
+            tabs={tabs}
+            active={activeTab}
+            onChange={(id) => setSearchParams({ tab: id }, { replace: true })}
+          />
+        </div>
+        <div className="mt-6">
+          {activeTab === "overview" && roundState ? (
+            <ChampionshipOverview
+              championship={championship}
+              matches={matches}
+              standings={standings}
+              roundState={roundState}
+              groupViews={groupViews}
+              onOpenMatch={openMatch}
+              onOpenTab={(id) => setSearchParams({ tab: id }, { replace: true })}
+              onRefresh={() => load(true)}
+            />
+          ) : null}
+          {activeTab === "groups" ? (
+            <ChampionshipGroups
+              groups={championship.groups}
+              standings={standings}
+              matches={matches}
+              groupViews={groupViews}
+              myTeamIds={myTeamIds}
+              onOpenMatch={openMatch}
+            />
+          ) : null}
+          {activeTab === "matches" && roundState ? (
+            <ChampionshipMatches
+              groups={championship.groups}
+              roundState={roundState}
+              onOpenMatch={openMatch}
+            />
+          ) : null}
+          {activeTab === "playoff" ? (
+            <ChampionshipPlayoff
+              matches={matches}
+              currentStage={roundState?.playoffStage ?? null}
+              onOpenMatch={openMatch}
+            />
+          ) : null}
+          {activeTab === "scorers" ? <TopScorers rows={statistics.players} /> : null}
+        </div>
+      </div>
+    </div>
+  );
+}

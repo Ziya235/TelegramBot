@@ -1,0 +1,500 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Link,
+  useNavigate,
+  useOutletContext,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
+import { Lock, Target, Trophy } from "lucide-react";
+import { Badge, Button } from "../../components/ui";
+import {
+  fetchLeague,
+  fetchLeagueMatches,
+  fetchLeaguePlayers,
+  fetchLeagueStandings,
+} from "../../api/leagues";
+import { mediaUrl } from "../../api/base";
+import type { League, LeaguePlayerRow, StandingRow } from "../../types/league";
+import type { Match } from "../../types/match";
+import type { AppOutletContext } from "../../App";
+import {
+  competitionPhaseClass,
+  leaguePhase,
+  leagueStatusLabel,
+} from "../../lib/competitionStatus";
+import { LeagueMatches } from "./components/LeagueMatches";
+
+type TabId = "standings" | "matches" | "goals" | "assists" | "ga";
+
+const TABS: { id: TabId; label: string }[] = [
+  { id: "standings", label: "Cədvəl" },
+  { id: "matches", label: "Oyunlar" },
+  { id: "goals", label: "Bombardirlər" },
+  { id: "assists", label: "Asistlər" },
+  { id: "ga", label: "Qol + Asist" },
+];
+
+function formatDiff(value: number): string {
+  if (value > 0) return `+${value}`;
+  return String(value);
+}
+
+function playerName(row: LeaguePlayerRow): string {
+  return `${row.firstName} ${row.lastName}`.trim();
+}
+
+export default function LeagueDetailPage() {
+  const { leagueId: leagueIdParam } = useParams();
+  const leagueId = Number(leagueIdParam);
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { isDarkMode } = useOutletContext<AppOutletContext>();
+  const light = !isDarkMode;
+  const bg = light
+    ? "[background:linear-gradient(135deg,#E8FFF3_0%,#EAF8FF_48%,#F2EDFF_100%)]"
+    : "bg-[#08080e]";
+  const card = light
+    ? "bg-white/70 backdrop-blur-sm border-gray-200"
+    : "border-white/10 bg-[#101017]";
+  const muted = light ? "text-gray-500" : "text-white/45";
+  const ink = light ? "text-gray-900" : "text-white";
+  const soft = light ? "text-gray-600" : "text-white/70";
+  const rowHover = light
+    ? "border-gray-100 hover:bg-gray-50/70"
+    : "border-white/5 hover:bg-white/[0.03]";
+  const borderSoft = light ? "border-gray-200" : "border-white/10";
+
+  const tabParam = searchParams.get("tab");
+  const activeTab: TabId = TABS.some((t) => t.id === tabParam)
+    ? (tabParam as TabId)
+    : "standings";
+
+  const [league, setLeague] = useState<League | null>(null);
+  const [standings, setStandings] = useState<StandingRow[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [players, setPlayers] = useState<LeaguePlayerRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    if (!Number.isInteger(leagueId) || leagueId <= 0) {
+      setError("Yanlış liqa");
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    try {
+      const [found, standingsRes, matchRows, playerRows] = await Promise.all([
+        fetchLeague(leagueId),
+        fetchLeagueStandings(leagueId),
+        fetchLeagueMatches(leagueId),
+        fetchLeaguePlayers(leagueId),
+      ]);
+      setLeague(found);
+      setStandings(standingsRes.standings);
+      setMatches(matchRows);
+      setPlayers(playerRows);
+    } catch (err) {
+      setLeague(null);
+      setStandings([]);
+      setMatches([]);
+      setPlayers([]);
+      setError(err instanceof Error ? err.message : "Yüklənmədi");
+    } finally {
+      setLoading(false);
+    }
+  }, [leagueId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const goalTable = useMemo(
+    () =>
+      [...players]
+        .filter((p) => p.goals > 0)
+        .sort(
+          (a, b) =>
+            b.goals - a.goals ||
+            b.assists - a.assists ||
+            playerName(a).localeCompare(playerName(b), "az"),
+        ),
+    [players],
+  );
+
+  const assistTable = useMemo(
+    () =>
+      [...players]
+        .filter((p) => p.assists > 0)
+        .sort(
+          (a, b) =>
+            b.assists - a.assists ||
+            b.goals - a.goals ||
+            playerName(a).localeCompare(playerName(b), "az"),
+        ),
+    [players],
+  );
+
+  const gaTable = useMemo(
+    () =>
+      [...players]
+        .filter((p) => p.goals + p.assists > 0)
+        .sort(
+          (a, b) =>
+            b.goals + b.assists - (a.goals + a.assists) ||
+            b.goals - a.goals ||
+            playerName(a).localeCompare(playerName(b), "az"),
+        ),
+    [players],
+  );
+
+  const setTab = (id: TabId) => {
+    setSearchParams({ tab: id }, { replace: true });
+  };
+
+  if (loading) {
+    return (
+      <p
+        className={`min-h-screen pt-24 text-center ${bg} ${light ? "text-gray-400" : "text-white/40"}`}
+      >
+        Yüklənir...
+      </p>
+    );
+  }
+
+  if (error || !league) {
+    return (
+      <div className={`min-h-screen pt-24 text-center ${bg}`}>
+        <p className="mb-4 text-rose-400">
+          {error?.includes("do not have access") ||
+          error?.includes("giriş")
+            ? "Bu özəl liqaya yalnız iştirakçılar baxa bilər"
+            : error || "Tapılmadı"}
+        </p>
+        <Button onClick={() => navigate("/sports/football")} variant="outline">
+          Geri
+        </Button>
+      </div>
+    );
+  }
+
+  const renderPlayerTable = (
+    rows: LeaguePlayerRow[],
+    empty: string,
+    columns: "goals" | "assists" | "ga",
+  ) => (
+    <div className={`overflow-hidden rounded-2xl border ${card}`}>
+      {rows.length === 0 ? (
+        <p className={`px-4 py-12 text-center text-sm ${muted}`}>{empty}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-sm">
+            <thead>
+              <tr
+                className={`border-b text-xs font-semibold uppercase tracking-wide ${borderSoft} ${muted}`}
+              >
+                <th className="px-3 py-3 text-center">#</th>
+                <th className="px-3 py-3">Oyunçu</th>
+                <th className="px-3 py-3">Komanda</th>
+                <th className="px-2 py-3 text-center">O</th>
+                {columns === "goals" || columns === "ga" ? (
+                  <th className="px-2 py-3 text-center">Qol</th>
+                ) : null}
+                {columns === "assists" || columns === "ga" ? (
+                  <th className="px-2 py-3 text-center">Asist</th>
+                ) : null}
+                {columns === "ga" ? (
+                  <th className="px-2 py-3 text-center">Cəmi</th>
+                ) : null}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, index) => (
+                <tr key={row.id} className={`border-b ${rowHover}`}>
+                  <td className={`px-3 py-3 text-center font-medium ${muted}`}>
+                    {index + 1}
+                  </td>
+                  <td className="px-3 py-3">
+                    <Link
+                      to={`/players/${row.id}`}
+                      className="group flex items-center gap-2.5"
+                    >
+                      {row.photo ? (
+                        <img
+                          src={mediaUrl(row.photo)}
+                          alt=""
+                          className="h-8 w-8 rounded-full object-cover"
+                        />
+                      ) : (
+                        <span
+                          className={`flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold ${
+                            light
+                              ? "bg-gray-100 text-gray-500"
+                              : "bg-white/10 text-white/50"
+                          }`}
+                        >
+                          {playerName(row).slice(0, 1).toUpperCase()}
+                        </span>
+                      )}
+                      <span>
+                        <span
+                          className={`block font-semibold ${ink} ${
+                            light
+                              ? "group-hover:text-emerald-600"
+                              : "group-hover:text-[#c5f135]"
+                          }`}
+                        >
+                          {playerName(row)}
+                        </span>
+                        {row.shirtNumber != null ? (
+                          <span className={`text-xs ${muted}`}>
+                            #{row.shirtNumber}
+                          </span>
+                        ) : null}
+                      </span>
+                    </Link>
+                  </td>
+                  <td className={`px-3 py-3 ${soft}`}>{row.team.name}</td>
+                  <td className={`px-2 py-3 text-center ${soft}`}>
+                    {row.matchesPlayed}
+                  </td>
+                  {columns === "goals" || columns === "ga" ? (
+                    <td className={`px-2 py-3 text-center font-bold ${ink}`}>
+                      {row.goals}
+                    </td>
+                  ) : null}
+                  {columns === "assists" || columns === "ga" ? (
+                    <td className={`px-2 py-3 text-center font-bold ${ink}`}>
+                      {row.assists}
+                    </td>
+                  ) : null}
+                  {columns === "ga" ? (
+                    <td
+                      className={`px-2 py-3 text-center font-extrabold ${ink}`}
+                    >
+                      {row.goals + row.assists}
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+
+  return (
+    <div className={`min-h-screen pt-24 pb-20 ${bg}`}>
+      <div className="mx-auto max-w-[1000px] px-4 sm:px-6">
+        <div className="mb-6">
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <h1 className={`font-display text-4xl font-bold ${ink}`}>
+              {league.name}
+            </h1>
+            <span
+              className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold ${competitionPhaseClass(leaguePhase(league.status))}`}
+            >
+              {leagueStatusLabel(league.status)}
+            </span>
+            <Badge
+              variant={league.visibility === "PUBLIC" ? "public" : "private"}
+            >
+              {league.visibility === "PUBLIC" ? (
+                "Public"
+              ) : (
+                <span className="inline-flex items-center gap-1">
+                  <Lock size={10} /> Private
+                </span>
+              )}
+            </Badge>
+          </div>
+          <p className={`text-sm ${muted}`}>
+            {league.description ? ` · ${league.description}` : ""}
+          </p>
+        </div>
+
+        <div className="mb-5 flex flex-wrap gap-2">
+          {TABS.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setTab(tab.id)}
+              className={`rounded-lg px-3.5 py-2 text-sm font-semibold transition ${
+                activeTab === tab.id
+                  ? light
+                    ? "bg-gray-900 text-white"
+                    : "bg-white text-gray-900"
+                  : light
+                    ? "bg-white/80 text-gray-600 ring-1 ring-gray-200 hover:bg-white"
+                    : "bg-white/5 text-white/60 ring-1 ring-white/10 hover:bg-white/10"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "standings" ? (
+          <div className={`overflow-hidden rounded-2xl border ${card}`}>
+            <div
+              className={`flex items-center gap-2 border-b px-4 py-3 ${borderSoft}`}
+            >
+              <Trophy
+                size={16}
+                className={light ? "text-emerald-500" : "text-[#c5f135]"}
+              />
+              <h2 className={`font-semibold ${ink}`}>Turnir cədvəli</h2>
+            </div>
+            {standings.length === 0 ? (
+              <p className={`px-4 py-10 text-center text-sm ${muted}`}>
+                Hələ komanda yoxdur
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr
+                      className={`border-b text-xs uppercase ${borderSoft} ${muted}`}
+                    >
+                      <th className="px-3 py-3 text-center">#</th>
+                      <th className="px-3 py-3 text-left">Komanda</th>
+                      <th className="px-2 py-3 text-center">O</th>
+                      <th className="px-2 py-3 text-center">Q</th>
+                      <th className="px-2 py-3 text-center">H</th>
+                      <th className="px-2 py-3 text-center">M</th>
+                      <th className="px-2 py-3 text-center" title="Vurulan qollar">
+                        V
+                      </th>
+                      <th className="px-2 py-3 text-center" title="Buraxılan qollar">
+                        B
+                      </th>
+                      <th className="px-2 py-3 text-center">TF</th>
+                      <th className="px-2 py-3 text-center">X</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {standings.map((row, i) => (
+                      <tr
+                        key={row.teamId}
+                        role="link"
+                        tabIndex={0}
+                        onClick={() => navigate(`/teams/${row.teamId}`)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            navigate(`/teams/${row.teamId}`);
+                          }
+                        }}
+                        className={`cursor-pointer border-b ${rowHover}`}
+                      >
+                        <td className={`px-3 py-3 text-center ${muted}`}>
+                          {i + 1}
+                        </td>
+                        <td className="px-3 py-3">
+                          <span
+                            className={`flex items-center gap-2.5 font-medium ${ink}`}
+                          >
+                            {row.logo ? (
+                              <img
+                                src={mediaUrl(row.logo)}
+                                alt=""
+                                className="h-7 w-7 rounded-full object-cover"
+                              />
+                            ) : (
+                              <span
+                                className={`flex h-7 w-7 items-center justify-center rounded-full text-[10px] font-bold ${
+                                  light
+                                    ? "bg-emerald-50 text-emerald-600"
+                                    : "bg-white/10 text-[#c5f135]"
+                                }`}
+                              >
+                                {row.teamName.slice(0, 1)}
+                              </span>
+                            )}
+                            <span
+                              className={
+                                light
+                                  ? "hover:text-emerald-600"
+                                  : "hover:text-[#c5f135]"
+                              }
+                            >
+                              {row.teamName}
+                            </span>
+                          </span>
+                        </td>
+                        <td className={`px-2 py-3 text-center ${soft}`}>
+                          {row.played}
+                        </td>
+                        <td className={`px-2 py-3 text-center ${soft}`}>
+                          {row.wins}
+                        </td>
+                        <td className={`px-2 py-3 text-center ${soft}`}>
+                          {row.draws}
+                        </td>
+                        <td className={`px-2 py-3 text-center ${soft}`}>
+                          {row.losses}
+                        </td>
+                        <td className={`px-2 py-3 text-center ${soft}`}>
+                          {row.goalsFor}
+                        </td>
+                        <td className={`px-2 py-3 text-center ${soft}`}>
+                          {row.goalsAgainst}
+                        </td>
+                        <td className={`px-2 py-3 text-center ${soft}`}>
+                          {formatDiff(row.goalDifference)}
+                        </td>
+                        <td
+                          className={`px-2 py-3 text-center font-bold ${ink}`}
+                        >
+                          {row.points}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {activeTab === "matches" ? (
+          <LeagueMatches
+            leagueId={leagueId}
+            matches={matches}
+            light={light}
+            onOpenMatch={(match) => navigate(`/leagues/${leagueId}/matches/${match.id}`)}
+          />
+        ) : null}
+
+        {activeTab === "goals" ? (
+          <div>
+            <div
+              className={`mb-3 flex items-center gap-2 text-sm font-semibold ${soft}`}
+            >
+              <Target
+                className={`h-4 w-4 ${light ? "text-emerald-500" : "text-[#c5f135]"}`}
+              />
+              Qol cədvəli
+            </div>
+            {renderPlayerTable(goalTable, "Hələ qol yoxdur.", "goals")}
+          </div>
+        ) : null}
+
+        {activeTab === "assists" ? (
+          renderPlayerTable(assistTable, "Hələ asist yoxdur.", "assists")
+        ) : null}
+
+        {activeTab === "ga" ? (
+          renderPlayerTable(
+            gaTable,
+            "Hələ qol və ya asist yoxdur.",
+            "ga",
+          )
+        ) : null}
+      </div>
+    </div>
+  );
+}

@@ -1,0 +1,875 @@
+import { prisma } from "../config/db.js";
+import { addTeamToLeague } from "../utils/leagueMembership.js";
+import { parsePositiveInt, teamSelect, userBriefSelect } from "../utils/helpers.js";
+import {
+  MATCH_ERRORS,
+  isLeagueAcceptingTeams,
+} from "../utils/matchEditPolicy.js";
+import {
+  createNotification,
+  deleteNotificationsForEntity,
+} from "../services/notificationService.js";
+
+async function notifyLeagueInvite(userId, actorId, inviteId) {
+  if (!userId || userId === actorId) return;
+  try {
+    await createNotification({
+      userId,
+      actorId,
+      type: "LEAGUE_INVITE",
+      entityId: inviteId,
+    });
+  } catch (error) {
+    console.log("Error notifying league invite:", error);
+  }
+}
+
+async function notifyJoinRequest(userId, actorId, requestId) {
+  if (!userId || userId === actorId) return;
+  try {
+    await createNotification({
+      userId,
+      actorId,
+      type: "JOIN_REQUEST",
+      entityId: requestId,
+    });
+  } catch (error) {
+    console.log("Error notifying league join request:", error);
+  }
+}
+
+async function markNotificationsRead(userId, type, entityId) {
+  await prisma.notification.updateMany({
+    where: {
+      userId,
+      type,
+      entityId: String(entityId),
+    },
+    data: { isRead: true },
+  });
+}
+
+const inviteInclude = {
+  league: {
+    select: {
+      id: true,
+      name: true,
+      logo: true,
+      visibility: true,
+      status: true,
+      season: true,
+      createdById: true,
+    },
+  },
+  team: {
+    select: {
+      ...teamSelect,
+      captain: { select: userBriefSelect },
+    },
+  },
+  invitedBy: { select: userBriefSelect },
+};
+
+const joinInclude = {
+  league: {
+    select: {
+      id: true,
+      name: true,
+      logo: true,
+      visibility: true,
+      status: true,
+      season: true,
+      createdById: true,
+    },
+  },
+  team: {
+    select: {
+      ...teamSelect,
+      captain: { select: userBriefSelect },
+    },
+  },
+  requestedBy: { select: userBriefSelect },
+};
+
+/**
+ * Admin invites an existing team (by unique name) into their league.
+ */
+export const inviteTeamToLeague = async (req, res) => {
+  try {
+    const leagueId = parsePositiveInt(req.params.leagueId);
+    const { teamName, teamId, message } = req.body;
+
+    if (!leagueId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid league id",
+      });
+    }
+
+    const league = await prisma.league.findUnique({
+      where: { id: leagueId },
+      select: { id: true, createdById: true, name: true, status: true },
+    });
+
+    if (!league) {
+      return res.status(404).json({
+        success: false,
+        message: "League not found",
+      });
+    }
+
+    if (league.createdById !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only invite teams to your own league",
+      });
+    }
+
+    if (!isLeagueAcceptingTeams(league.status)) {
+      return res.status(400).json({
+        success: false,
+        message: MATCH_ERRORS.LEAGUE_NOT_ACCEPTING_INVITES,
+      });
+    }
+
+    let team = null;
+    if (teamId) {
+      const id = parsePositiveInt(teamId);
+      if (!id) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid team id",
+        });
+      }
+      team = await prisma.team.findUnique({
+        where: { id },
+        select: { id: true, name: true, captainId: true },
+      });
+    } else if (teamName?.trim()) {
+      team = await prisma.team.findUnique({
+        where: { name: teamName.trim() },
+        select: { id: true, name: true, captainId: true },
+      });
+    } else {
+      return res.status(400).json({
+        success: false,
+        message: "teamName or teamId is required",
+      });
+    }
+
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: "Team not found",
+      });
+    }
+
+    const alreadyIn = await prisma.leagueTeam.findUnique({
+      where: {
+        leagueId_teamId: { leagueId, teamId: team.id },
+      },
+    });
+
+    if (alreadyIn) {
+      return res.status(409).json({
+        success: false,
+        message: "Team is already in this league",
+      });
+    }
+
+    const pending = await prisma.leagueTeamInvite.findFirst({
+      where: {
+        leagueId,
+        teamId: team.id,
+        status: "PENDING",
+      },
+    });
+
+    if (pending) {
+      return res.status(409).json({
+        success: false,
+        message: "A pending invite already exists for this team",
+      });
+    }
+
+    const invite = await prisma.leagueTeamInvite.create({
+      data: {
+        leagueId,
+        teamId: team.id,
+        invitedById: req.user.id,
+        message: message?.trim() || null,
+      },
+      include: inviteInclude,
+    });
+
+    await notifyLeagueInvite(team.captainId, req.user.id, invite.id);
+
+    return res.status(201).json({
+      success: true,
+      message: "Invite sent to team captain",
+      data: invite,
+    });
+  } catch (error) {
+    console.log("Error in inviteTeamToLeague:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+export const listLeagueInvites = async (req, res) => {
+  try {
+    const leagueId = parsePositiveInt(req.params.leagueId);
+    if (!leagueId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid league id",
+      });
+    }
+
+    const league = await prisma.league.findUnique({
+      where: { id: leagueId },
+      select: { createdById: true },
+    });
+
+    if (!league) {
+      return res.status(404).json({
+        success: false,
+        message: "League not found",
+      });
+    }
+
+    if (league.createdById !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden",
+      });
+    }
+
+    const invites = await prisma.leagueTeamInvite.findMany({
+      where: { leagueId },
+      include: inviteInclude,
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.status(200).json({ success: true, data: invites });
+  } catch (error) {
+    console.log("Error in listLeagueInvites:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+export const cancelLeagueInvite = async (req, res) => {
+  try {
+    const leagueId = parsePositiveInt(req.params.leagueId);
+    const inviteId = parsePositiveInt(req.params.inviteId);
+
+    if (!leagueId || !inviteId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid league or invite id",
+      });
+    }
+
+    const league = await prisma.league.findUnique({
+      where: { id: leagueId },
+      select: { id: true, createdById: true, status: true },
+    });
+
+    if (!league) {
+      return res.status(404).json({
+        success: false,
+        message: "League not found",
+      });
+    }
+
+    if (league.createdById !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only cancel invites for your own league",
+      });
+    }
+
+    if (!isLeagueAcceptingTeams(league.status)) {
+      return res.status(400).json({
+        success: false,
+        message: MATCH_ERRORS.LEAGUE_NOT_ACCEPTING_INVITES,
+      });
+    }
+
+    const invite = await prisma.leagueTeamInvite.findFirst({
+      where: { id: inviteId, leagueId },
+      include: {
+        team: { select: { captainId: true } },
+      },
+    });
+
+    if (!invite) {
+      return res.status(404).json({
+        success: false,
+        message: "Invite not found",
+      });
+    }
+
+    if (invite.status !== "PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: "Invite is no longer pending",
+      });
+    }
+
+    const updated = await prisma.leagueTeamInvite.update({
+      where: { id: inviteId },
+      data: {
+        status: "CANCELLED",
+        respondedAt: new Date(),
+      },
+      include: inviteInclude,
+    });
+
+    await deleteNotificationsForEntity({
+      type: "LEAGUE_INVITE",
+      entityId: invite.id,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Invite cancelled",
+      data: updated,
+    });
+  } catch (error) {
+    console.log("Error in cancelLeagueInvite:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+/**
+ * Captain lists pending invites for their teams.
+ */
+export const listMyTeamInvites = async (req, res) => {
+  try {
+    const invites = await prisma.leagueTeamInvite.findMany({
+      where: {
+        status: "PENDING",
+        team: { captainId: req.user.id },
+      },
+      include: inviteInclude,
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.status(200).json({ success: true, data: invites });
+  } catch (error) {
+    console.log("Error in listMyTeamInvites:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+export const respondTeamInvite = async (req, res) => {
+  try {
+    const inviteId = parsePositiveInt(req.params.inviteId);
+    const action = String(req.body.action || "").toLowerCase();
+
+    if (!inviteId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid invite id",
+      });
+    }
+
+    if (!["accept", "reject"].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: "action must be accept or reject",
+      });
+    }
+
+    const invite = await prisma.leagueTeamInvite.findUnique({
+      where: { id: inviteId },
+      include: {
+        team: { select: { id: true, captainId: true } },
+        league: { select: { id: true, status: true } },
+      },
+    });
+
+    if (!invite) {
+      return res.status(404).json({
+        success: false,
+        message: "Invite not found",
+      });
+    }
+
+    if (invite.team.captainId !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Only the team captain can respond",
+      });
+    }
+
+    if (invite.status !== "PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: "Invite is no longer pending",
+      });
+    }
+
+    if (action === "accept" && !isLeagueAcceptingTeams(invite.league.status)) {
+      return res.status(400).json({
+        success: false,
+        message: MATCH_ERRORS.LEAGUE_NOT_ACCEPTING_INVITES,
+      });
+    }
+
+    if (action === "reject") {
+      const updated = await prisma.leagueTeamInvite.update({
+        where: { id: inviteId },
+        data: {
+          status: "REJECTED",
+          respondedAt: new Date(),
+        },
+        include: inviteInclude,
+      });
+      await markNotificationsRead(req.user.id, "LEAGUE_INVITE", inviteId);
+      await notifyLeagueInvite(invite.invitedById, req.user.id, invite.id);
+      return res.status(200).json({
+        success: true,
+        message: "Invite rejected",
+        data: updated,
+      });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await addTeamToLeague(tx, invite.leagueId, invite.teamId);
+
+      return tx.leagueTeamInvite.update({
+        where: { id: inviteId },
+        data: {
+          status: "ACCEPTED",
+          respondedAt: new Date(),
+        },
+        include: inviteInclude,
+      });
+    });
+
+    await markNotificationsRead(req.user.id, "LEAGUE_INVITE", inviteId);
+    await notifyLeagueInvite(invite.invitedById, req.user.id, invite.id);
+
+    return res.status(200).json({
+      success: true,
+      message: "Team joined the league",
+      data: updated,
+    });
+  } catch (error) {
+    console.log("Error in respondTeamInvite:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+/**
+ * Captain requests to join a DRAFT league (public or private).
+ */
+export const requestJoinPublicLeague = async (req, res) => {
+  try {
+    const leagueId = parsePositiveInt(req.params.leagueId);
+    const { teamId, message } = req.body;
+    const tid = parsePositiveInt(teamId);
+
+    if (!leagueId || !tid) {
+      return res.status(400).json({
+        success: false,
+        message: "leagueId and teamId are required",
+      });
+    }
+
+    const league = await prisma.league.findUnique({
+      where: { id: leagueId },
+      select: {
+        id: true,
+        visibility: true,
+        createdById: true,
+        name: true,
+        status: true,
+      },
+    });
+
+    if (!league) {
+      return res.status(404).json({
+        success: false,
+        message: "League not found",
+      });
+    }
+
+    if (!isLeagueAcceptingTeams(league.status)) {
+      return res.status(400).json({
+        success: false,
+        message: MATCH_ERRORS.LEAGUE_NOT_ACCEPTING_REQUESTS,
+      });
+    }
+
+    const team = await prisma.team.findUnique({
+      where: { id: tid },
+      select: { id: true, captainId: true },
+    });
+
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: "Team not found",
+      });
+    }
+
+    if (team.captainId !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Only the team captain can request to join",
+      });
+    }
+
+    const alreadyIn = await prisma.leagueTeam.findFirst({
+      where: {
+        leagueId,
+        team: { captainId: req.user.id },
+      },
+      select: { teamId: true },
+    });
+
+    if (alreadyIn) {
+      return res.status(409).json({
+        success: false,
+        message: "Bu liqada artıq komandanız var",
+      });
+    }
+
+    const pending = await prisma.leagueJoinRequest.findFirst({
+      where: {
+        leagueId,
+        status: "PENDING",
+        team: { captainId: req.user.id },
+      },
+      select: { id: true },
+    });
+
+    if (pending) {
+      return res.status(409).json({
+        success: false,
+        message: "Bu liqaya artıq gözləyən sorğunuz var",
+      });
+    }
+
+    const request = await prisma.leagueJoinRequest.create({
+      data: {
+        leagueId,
+        teamId: tid,
+        requestedById: req.user.id,
+        message: message?.trim() || null,
+      },
+      include: joinInclude,
+    });
+
+    await notifyJoinRequest(league.createdById, req.user.id, request.id);
+
+    return res.status(201).json({
+      success: true,
+      message: "Join request sent to league admin",
+      data: request,
+    });
+  } catch (error) {
+    console.log("Error in requestJoinPublicLeague:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+export const cancelJoinRequest = async (req, res) => {
+  try {
+    const requestId = parsePositiveInt(req.params.requestId);
+    if (!requestId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request id",
+      });
+    }
+
+    const request = await prisma.leagueJoinRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        league: { select: { createdById: true } },
+      },
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found",
+      });
+    }
+
+    if (request.requestedById !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Only the requester can cancel this request",
+      });
+    }
+
+    if (request.status !== "PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: "Request is no longer pending",
+      });
+    }
+
+    const updated = await prisma.leagueJoinRequest.update({
+      where: { id: requestId },
+      data: {
+        status: "CANCELLED",
+        respondedAt: new Date(),
+      },
+      include: joinInclude,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Join request cancelled",
+      data: updated,
+    });
+  } catch (error) {
+    console.log("Error in cancelJoinRequest:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+export const listLeagueJoinRequests = async (req, res) => {
+  try {
+    const leagueId = parsePositiveInt(req.params.leagueId);
+    if (!leagueId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid league id",
+      });
+    }
+
+    const league = await prisma.league.findUnique({
+      where: { id: leagueId },
+      select: { createdById: true },
+    });
+
+    if (!league) {
+      return res.status(404).json({
+        success: false,
+        message: "League not found",
+      });
+    }
+
+    if (league.createdById !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Forbidden",
+      });
+    }
+
+    const requests = await prisma.leagueJoinRequest.findMany({
+      where: { leagueId },
+      include: joinInclude,
+      orderBy: { createdAt: "desc" },
+    });
+
+    return res.status(200).json({ success: true, data: requests });
+  } catch (error) {
+    console.log("Error in listLeagueJoinRequests:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+export const respondJoinRequest = async (req, res) => {
+  try {
+    const requestId = parsePositiveInt(req.params.requestId);
+    const action = String(req.body.action || "").toLowerCase();
+
+    if (!requestId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid request id",
+      });
+    }
+
+    if (!["accept", "reject"].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: "action must be accept or reject",
+      });
+    }
+
+    const request = await prisma.leagueJoinRequest.findUnique({
+      where: { id: requestId },
+      include: {
+        league: { select: { createdById: true, status: true } },
+        team: { select: { captainId: true } },
+      },
+    });
+
+    if (!request) {
+      return res.status(404).json({
+        success: false,
+        message: "Request not found",
+      });
+    }
+
+    if (request.league.createdById !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Only the league admin can respond",
+      });
+    }
+
+    if (request.status !== "PENDING") {
+      return res.status(400).json({
+        success: false,
+        message: "Request is no longer pending",
+      });
+    }
+
+    if (action === "accept" && !isLeagueAcceptingTeams(request.league.status)) {
+      return res.status(400).json({
+        success: false,
+        message: MATCH_ERRORS.LEAGUE_NOT_ACCEPTING_REQUESTS,
+      });
+    }
+
+    if (action === "reject") {
+      const updated = await prisma.leagueJoinRequest.update({
+        where: { id: requestId },
+        data: {
+          status: "REJECTED",
+          respondedAt: new Date(),
+        },
+        include: joinInclude,
+      });
+      await markNotificationsRead(req.user.id, "JOIN_REQUEST", requestId);
+      await notifyJoinRequest(request.requestedById, req.user.id, request.id);
+      return res.status(200).json({
+        success: true,
+        message: "Join request rejected",
+        data: updated,
+      });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await addTeamToLeague(tx, request.leagueId, request.teamId);
+
+      return tx.leagueJoinRequest.update({
+        where: { id: requestId },
+        data: {
+          status: "ACCEPTED",
+          respondedAt: new Date(),
+        },
+        include: joinInclude,
+      });
+    });
+
+    await markNotificationsRead(req.user.id, "JOIN_REQUEST", requestId);
+    await notifyJoinRequest(request.requestedById, req.user.id, request.id);
+
+    return res.status(200).json({
+      success: true,
+      message: "Team added to league",
+      data: updated,
+    });
+  } catch (error) {
+    console.log("Error in respondJoinRequest:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
+
+/**
+ * Remove team from league (unlink, do not delete team).
+ */
+export const removeTeamFromLeague = async (req, res) => {
+  try {
+    const leagueId = parsePositiveInt(req.params.leagueId);
+    const teamId = parsePositiveInt(req.params.teamId);
+
+    if (!leagueId || !teamId) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid league or team id",
+      });
+    }
+
+    const league = await prisma.league.findUnique({
+      where: { id: leagueId },
+      select: { createdById: true, status: true },
+    });
+
+    if (!league) {
+      return res.status(404).json({
+        success: false,
+        message: "League not found",
+      });
+    }
+
+    if (league.createdById !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "You can only manage your own league",
+      });
+    }
+
+    if (!isLeagueAcceptingTeams(league.status)) {
+      return res.status(400).json({
+        success: false,
+        message: MATCH_ERRORS.LEAGUE_TEAMS_LOCKED_REMOVE,
+      });
+    }
+
+    const membership = await prisma.leagueTeam.findUnique({
+      where: {
+        leagueId_teamId: { leagueId, teamId },
+      },
+    });
+
+    if (!membership) {
+      return res.status(404).json({
+        success: false,
+        message: "Team not found in this league",
+      });
+    }
+
+    await prisma.leagueTeam.delete({
+      where: { id: membership.id },
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Team removed from league",
+    });
+  } catch (error) {
+    console.log("Error in removeTeamFromLeague:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
