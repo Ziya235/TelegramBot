@@ -1,5 +1,5 @@
 import { useNavigate, useOutletContext } from 'react-router-dom'
-import { ArrowRight, Play } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
 import { Button } from '../../../components/ui'
 import { useAuth } from '../../../context/AuthContext'
 import type { AppOutletContext } from '../../../App'
@@ -64,15 +64,6 @@ export function HeroSection() {
               <Button onClick={handleStart} size="lg">
                 İndi Başla
                 <ArrowRight size={18} />
-              </Button>
-
-              <Button
-                onClick={() => navigate('/sports')}
-                variant="outline"
-                size="lg"
-              >
-                <Play size={16} />
-                İdmanları Kəşf Et
               </Button>
             </div>
 

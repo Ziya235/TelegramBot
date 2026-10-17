@@ -42,7 +42,6 @@ export function LandingScreen({ navigation }: RootScreenProps<"Landing">) {
       </Text>
       <View style={{ gap: spacing.sm, marginTop: spacing.lg }}>
         <Button title="İndi Başla" iconRight="arrow-forward" size="lg" onPress={() => navigation.navigate("Register")} fullWidth />
-        <Button title="İdmanları Kəşf Et" variant="outline" size="lg" onPress={() => navigation.navigate("GuestSports")} fullWidth />
       </View>
       <Text style={styles.supported}>
         Dəstəklənən idmanlar: <Text style={{ fontSize: 16, letterSpacing: 3 }}>⚽🏀🎾🏓🏐</Text>
