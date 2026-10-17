@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { formatBotConfigError, validateBotEnv, WEBHOOK_PATH } from "../bot/config.js";
+import { executeCodeTask, readCodeTaskConfig } from "../bot/codeTask.js";
 import { classifyAiError, createLogger } from "../bot/errors.js";
 import { createUpdateHandler } from "../bot/handler.js";
 import { createHistoryStore } from "../bot/history.js";
@@ -402,5 +403,110 @@ describe("polling", () => {
     polling.stop();
     await polling.done;
     assert.deepEqual(handled, [15]);
+  });
+});
+
+describe("code changes from Telegram", () => {
+  const config = readCodeTaskConfig({
+    CURSOR_API_KEY: "cursor_test",
+    GITHUB_TOKEN: "github_test",
+    TELEGRAM_ALLOWED_USER_IDS: "42",
+    GITHUB_REPOSITORY: "Ziya235/TelegramBot",
+  });
+
+  it("does not start an agent for a user who is not allowed", async () => {
+    let called = false;
+    const sent = [];
+    const handleUpdate = createUpdateHandler({
+      log: () => {},
+      allowedUserIds: ["42"],
+      runCodeTask: async () => {
+        called = true;
+        return { ok: true, userMessage: "merged" };
+      },
+      telegram: {
+        sendMessage: async (chatId, text) => sent.push(text),
+      },
+    });
+    const result = await handleUpdate({
+      update_id: 1,
+      message: { chat: { id: 9 }, from: { id: 7 }, text: "başlığı dəyiş" },
+    });
+    assert.equal(result.status, "forbidden");
+    assert.equal(called, false);
+    assert.equal(sent[0], BOT_MESSAGES.notAllowed);
+  });
+
+  it("asks the cloud agent to edit the repo and then merges the pull request", async () => {
+    const calls = [];
+    const fetches = [];
+    const outcome = await executeCodeTask({
+      instruction: "Landing başlığını dəyiş",
+      config,
+      mergeAttempts: 1,
+      sleep: async () => {},
+      promptAgent: async (prompt, options) => {
+        calls.push({ prompt, options });
+        return {
+          status: "finished",
+          result: "frontend/src/pages/Landing/data.ts dəyişdi",
+          git: {
+            branches: [{ repoUrl: "https://github.com/Ziya235/TelegramBot", branch: "cursor/landing" }],
+          },
+        };
+      },
+      fetchImpl: async (url, init) => {
+        fetches.push({ url: String(url), method: init?.method, body: init?.body });
+        if (String(url).endsWith("/pulls")) {
+          return new Response(JSON.stringify({ html_url: "https://github.com/Ziya235/TelegramBot/pull/8" }), {
+            status: 201,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(JSON.stringify({ merged: true, sha: "abc" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.merged, true);
+    assert.match(outcome.userMessage, /pull\/8/);
+    assert.equal(calls[0].options.cloud.autoCreatePR, true);
+    assert.equal(calls[0].options.cloud.repos[0].url, "https://github.com/Ziya235/TelegramBot");
+    assert.equal(fetches[0].method, "POST");
+    assert.equal(fetches[1].method, "PUT");
+    assert.match(fetches[1].url, /\/pulls\/8\/merge$/);
+  });
+
+  it("does not merge when the agent fails", async () => {
+    let fetched = false;
+    const outcome = await executeCodeTask({
+      instruction: "dəyiş",
+      config,
+      promptAgent: async () => ({ status: "error" }),
+      fetchImpl: async () => {
+        fetched = true;
+        return new Response("{}", { status: 500 });
+      },
+    });
+    assert.equal(outcome.ok, false);
+    assert.equal(fetched, false);
+  });
+
+  it("reports missing code-task variables without calling the agent", async () => {
+    let called = false;
+    const outcome = await executeCodeTask({
+      instruction: "dəyiş",
+      config: readCodeTaskConfig({}),
+      promptAgent: async () => {
+        called = true;
+      },
+    });
+    assert.equal(called, false);
+    assert.match(outcome.userMessage, /CURSOR_API_KEY/);
+    assert.match(outcome.userMessage, /GITHUB_TOKEN/);
+    assert.match(outcome.userMessage, /TELEGRAM_ALLOWED_USER_IDS/);
   });
 });

@@ -5,7 +5,7 @@ The Telegram bot runs inside the existing Express API. It is not part of the Vit
 ## 1. Architecture
 
 - **Backend** (`backend/server.js`): Express 5 API on Node.js 22. The start command is `npm start`, which runs `node backend/server.js`. The same process serves the sports API, Socket.IO, and the Telegram bot.
-- **Telegram bot** (`backend/bot/`): receives text messages, calls the official OpenAI SDK on the server, and sends the reply back to the same chat.
+- **Telegram bot** (`backend/bot/`): a text message from an allowed Telegram user starts a Cursor cloud agent. The agent edits `Ziya235/TelegramBot` while the laptop is off, opens a pull request, and the backend merges it. The bot process itself must be running on Render, not on the laptop.
 - **Frontend** (`frontend/`): Vite app. It talks to `VITE_API_URL` and never calls OpenAI.
 - **Mobile** (`mobile/`): separate client. It does not call OpenAI.
 - **Local mode**: long polling via `getUpdates`.
@@ -54,11 +54,15 @@ Bot variables:
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `OPENAI_API_KEY` | Yes, for the bot | OpenAI secret key. Used only on the server. |
-| `OPENAI_MODEL` | No | Model name. Defaults to `gpt-4o-mini`. |
+| `OPENAI_API_KEY` | Yes, to start the bot | Kept for startup validation. Code changes do not call OpenAI. |
 | `TELEGRAM_BOT_TOKEN` | Yes, for the bot | Token from BotFather. |
-| `TELEGRAM_WEBHOOK_SECRET` | Yes for webhook / Render | 1–256 characters: letters, numbers, `_`, `-`. Sent as Telegram's secret token. |
-| `TELEGRAM_WEBHOOK_URL` | No | Public `https` origin without a path. On Render, omit this and use `RENDER_EXTERNAL_URL`. |
+| `TELEGRAM_ALLOWED_USER_IDS` | Yes, for code changes | Numeric Telegram user ids, comma-separated. Send `/id` to the bot. |
+| `CURSOR_API_KEY` | Yes, for code changes | Cursor user key from the dashboard integrations page. |
+| `GITHUB_TOKEN` | Yes, for code changes | Token that can open and merge pull requests on this repo. |
+| `GITHUB_REPOSITORY` | No | Defaults to `Ziya235/TelegramBot`. |
+| `CURSOR_MODEL` | No | Defaults to `composer-2.5`. |
+| `TELEGRAM_WEBHOOK_SECRET` | Yes for webhook / Render | 1–256 characters: letters, numbers, `_`, `-`. |
+| `TELEGRAM_WEBHOOK_URL` | No | Public `https` origin. On Render, omit this and use `RENDER_EXTERNAL_URL`. |
 
 If `OPENAI_API_KEY` or `TELEGRAM_BOT_TOKEN` is missing, the sports API still starts and the bot stays off. The log names the missing variables and does not print secret values.
 
@@ -100,16 +104,21 @@ Local mode uses polling. On startup the bot removes any previously registered we
 
 The API listens on port `5000` unless `PORT` is set.
 
-## 8. Test the bot in Telegram
+## 8. Change code from Telegram
 
-1. Start the backend locally, or deploy it with the variables above.
-2. Open the bot in Telegram and send `/start`. You should get a bilingual welcome. This does not call OpenAI.
-3. Send an Azerbaijani message, then a follow-up such as "bir daha qısa yaz". The reply should stay in Azerbaijani and use the previous turn.
-4. From another Telegram account, or another chat, send a different question. The two chats must not share history.
-5. Send `/reset`, then a message that only makes sense as a follow-up. The bot should no longer use the old context.
-6. Send a photo or sticker. The bot should ask for text and should not call OpenAI.
+The laptop can be off only after this backend is deployed on Render. A local `npm start` stops when the computer sleeps.
 
-Automated tests mock OpenAI and Telegram, so they do not spend API credit:
+1. In Cursor, connect GitHub so cloud agents can push to `Ziya235/TelegramBot`: [https://cursor.com/dashboard/integrations](https://cursor.com/dashboard/integrations).
+2. Create a Cursor API key on that page and set `CURSOR_API_KEY`.
+3. Create a GitHub token with access to this repository: Contents (read and write) and Pull requests (read and write). Set `GITHUB_TOKEN`.
+4. Deploy the API service. Send `/id` to the bot, put that number in `TELEGRAM_ALLOWED_USER_IDS`, and restart the API.
+5. Send `/start`, then a change such as `Landing page-də başlığı dəyiş`.
+6. The bot replies that the job started. A cloud agent edits the repo, opens a pull request, and the backend merges it into `main`.
+7. Another Telegram account that sends the same text gets a refusal and no agent run.
+
+A merge to `main` can deploy the site if Render auto-deploy is on. Only the allow-listed Telegram user can start a job.
+
+Automated tests mock Cursor, GitHub, and Telegram:
 
 ```bash
 npm test
@@ -123,7 +132,7 @@ On the **API** service:
 
 1. Confirm the start command is `npm start` (`node backend/server.js`).
 2. Confirm the Node version is 22.
-3. Set `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, and `TELEGRAM_WEBHOOK_SECRET`.
+3. Set `OPENAI_API_KEY`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_WEBHOOK_SECRET`, `CURSOR_API_KEY`, `GITHUB_TOKEN`, and `TELEGRAM_ALLOWED_USER_IDS`.
 4. Leave `TELEGRAM_WEBHOOK_URL` empty so the bot uses `RENDER_EXTERNAL_URL`.
 5. Deploy that API service. Render web services accept incoming HTTPS, which is what Telegram webhooks need.
 6. After boot, logs should contain `[telegram-bot] webhook_ready`.

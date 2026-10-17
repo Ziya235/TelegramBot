@@ -13,6 +13,16 @@ export const BOT_MESSAGES = {
     "",
     "/reset — söhbəti sıfırlayır / clears this chat",
   ].join("\n"),
+  codeStart: [
+    "Kodu dəyişmək üçün nəyi dəyişəcəyini yaz.",
+    "Məsələn: landing page-də başlığı dəyiş.",
+    "Kompüterin bağlı ola bilər. İş buludda gedəcək, sonra GitHub-da merge olunacaq.",
+    "",
+    "/id — sənin Telegram user id-in",
+  ].join("\n"),
+  notAllowed: "Bu əmri yalnız botun sahibi verə bilər.",
+  taskStarted: "İş başladı. Dəyişiklik buludda ediləcək, bitəndə nəticəni yazacağam.",
+  taskBusy: "Artıq bir dəyişiklik gedir. Bitməsini gözlə.",
   reset: [
     "Söhbət tarixçəsi silindi. Yeni sual yaza bilərsiniz.",
     "Chat history cleared. You can start a new conversation.",

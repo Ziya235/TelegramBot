@@ -1,4 +1,5 @@
 import { HISTORY_MESSAGE_LIMIT, MAX_USER_CHARS } from "./config.js";
+import { isAllowedUser } from "./codeTask.js";
 import { classifyAiError } from "./errors.js";
 import { createHistoryStore } from "./history.js";
 import { BOT_MESSAGES, SYSTEM_PROMPT, parseCommand } from "./messages.js";
@@ -31,12 +32,15 @@ async function safeSend(telegram, chatId, text, log) {
 
 export function createUpdateHandler({
   complete,
+  runCodeTask,
+  allowedUserIds = [],
   telegram,
   history = createHistoryStore(HISTORY_MESSAGE_LIMIT),
   log = () => {},
   deduper = createDeduper(),
 }) {
   const tails = new Map();
+  let codeTaskBusy = false;
 
   function enqueue(chatId, task) {
     const previous = tails.get(chatId) ?? Promise.resolve();
@@ -66,8 +70,13 @@ export function createUpdateHandler({
 
     const command = parseCommand(text);
     if (command === "start" || command === "help") {
-      await safeSend(telegram, chatId, BOT_MESSAGES.start, log);
+      await safeSend(telegram, chatId, runCodeTask ? BOT_MESSAGES.codeStart : BOT_MESSAGES.start, log);
       return { status: "start" };
+    }
+    if (command === "id") {
+      const userId = message.from?.id ?? "unknown";
+      await safeSend(telegram, chatId, `Telegram user id: ${userId}`, log);
+      return { status: "id" };
     }
     if (command === "reset") {
       history.reset(chatId);
@@ -81,6 +90,34 @@ export function createUpdateHandler({
     if (text.length > MAX_USER_CHARS) {
       await safeSend(telegram, chatId, BOT_MESSAGES.tooLong, log);
       return { status: "too_long" };
+    }
+
+    if (runCodeTask) {
+      const userId = message.from?.id;
+      if (!isAllowedUser(userId, allowedUserIds)) {
+        await safeSend(telegram, chatId, BOT_MESSAGES.notAllowed, log);
+        return { status: "forbidden" };
+      }
+      if (codeTaskBusy) {
+        await safeSend(telegram, chatId, BOT_MESSAGES.taskBusy, log);
+        return { status: "busy" };
+      }
+      codeTaskBusy = true;
+      await safeSend(telegram, chatId, BOT_MESSAGES.taskStarted, log);
+      try {
+        const outcome = await runCodeTask(text);
+        const reply = outcome?.userMessage || BOT_MESSAGES.unavailable;
+        for (const chunk of splitTelegramText(reply)) {
+          await telegram.sendMessage(chatId, chunk);
+        }
+        return { status: outcome?.ok ? "merged" : "task_failed" };
+      } catch (error) {
+        log("error", "code_task_failed", { name: error?.name || "Error", chatId });
+        await safeSend(telegram, chatId, BOT_MESSAGES.unavailable, log);
+        return { status: "task_failed" };
+      } finally {
+        codeTaskBusy = false;
+      }
     }
 
     const messages = [

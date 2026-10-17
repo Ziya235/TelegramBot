@@ -1,9 +1,15 @@
 import { formatBotConfigError, validateBotEnv } from "./config.js";
+import { executeCodeTask, readCodeTaskConfig } from "./codeTask.js";
 import { createLogger } from "./errors.js";
 import { createUpdateHandler } from "./handler.js";
 import { createOpenAiCompleter } from "./openai.js";
 import { createTelegramClient, startPolling } from "./telegramApi.js";
 import { mountTelegramWebhook } from "./webhook.js";
+
+async function promptWithCursor(message, options) {
+  const { Agent } = await import("@cursor/sdk");
+  return Agent.prompt(message, options);
+}
 
 export async function startTelegramBot(app, env = process.env) {
   const config = validateBotEnv(env);
@@ -12,11 +18,20 @@ export async function startTelegramBot(app, env = process.env) {
     return { started: false, missing: config.missing, problems: config.problems };
   }
 
-  const log = createLogger([config.token, config.apiKey, config.webhookSecret]);
+  const codeConfig = readCodeTaskConfig(env);
+  const log = createLogger([
+    config.token,
+    config.apiKey,
+    config.webhookSecret,
+    codeConfig.cursorApiKey,
+    codeConfig.githubToken,
+  ]);
   const telegram = createTelegramClient({ token: config.token });
   const ai = createOpenAiCompleter({ apiKey: config.apiKey, model: config.model });
   const handleUpdate = createUpdateHandler({
     complete: (input) => ai.complete(input),
+    runCodeTask: (instruction) => executeCodeTask({ instruction, config: codeConfig, promptAgent: promptWithCursor }),
+    allowedUserIds: codeConfig.allowedUserIds,
     telegram,
     log,
   });
