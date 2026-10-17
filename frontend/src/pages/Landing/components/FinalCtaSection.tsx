@@ -22,9 +22,6 @@ export function FinalCtaSection() {
             Qeydiyyatdan keç
             <ArrowRight size={18} />
           </Button>
-          <Button onClick={() => navigate('/sports')} variant="outline" size="lg">
-            İdmanları kəşf et
-          </Button>
         </div>
       </div>
     </section>
